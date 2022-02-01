@@ -7,7 +7,29 @@ import Trie "mo:base/Trie";
 module {
     public type SortedUniqueIndex<K, V> = RBTree.Tree<K, V>;
     public type SortedMultiIndex<K, V>  = RBTree.Tree<K, List.List<V>>;
+    
+    func addToSorted<K, V>(k : K, idx : SortedMultiIndex<K,V>, ord : OrderFunc<K>, v : V) : SortedMultiIndex<K,V> {
+        switch(RBTree.get(k, ord, idx)) {
+            case (null) {
+                return RBTree.put(k, ord, List.make(v), idx).1;
+            };
+            case (?existing) {
+                return RBTree.put(k, ord, List.push(v, existing), idx).1;
+            };
+        };
+    };
 
+    func removeFromSorted<K, V>(k : K, idx : SortedMultiIndex<K,V>, ord : OrderFunc<K>, anyButValue : (V) -> Bool) : SortedMultiIndex<K,V> {
+        switch(RBTree.get(k, ord, idx)) {
+            case (null) {
+                return idx;
+            };
+            case (?existing) {
+                return RBTree.put(k, ord, List.filter<V>(existing, anyButValue), idx).1;
+            };
+        };
+    };
+    
     public type HashUniqueIndex<K, V> = Trie.Trie<K, V>;
     public type HashMultiIndex<K, V>  = Trie.Trie<K, List.List<V>>;
 
@@ -39,19 +61,12 @@ module {
         put : (K, V) -> ?V;
     };
 
-    public type F<K, V, K2, V2> = (K, V) -> (K2, V2);
+    public type Mapper<K, V, K2> = (K, V) -> (K2);
     public type OrderFunc<K> = (K, K) -> Order.Order;
 
-    public type StoreBuilder<K, V, O> = object {
-        addSortedUniqueIndex : <K2, V2>(ord : OrderFunc<K2>, mapper : F<K, V, K2, V2>) -> Cell<SortedUniqueIndex<K2, V2>>;
-        addSortedMultiIndex  : <K2, V2>(ord : OrderFunc<K2>, mapper : F<K, V, K2, V2>) -> Cell<SortedMultiIndex<K2, V2>>;
-        
-        build : () -> (O, Store<K, V>);
-    };
-
     public type DaoFactory<K, V> = object {
-        addSortedUniqueIndex : <K2, V2>(name : Text, ord : OrderFunc<K2>, mapper : F<K, V, K2, V2>) -> Cell<SortedUniqueIndex<K2, V2>>;
-        //addSortedMultiIndex  : <K2, V2>(ord : OrderFunc<K2>, mapper : F<K, V, K2, V2>) -> Cell<SortedMultiIndex<K2, V2>>;
+        addSortedUniqueIndex : <K2>(name : Text, ord : OrderFunc<K2>, mapper : Mapper<K, V, K2>) -> Cell<SortedUniqueIndex<K2, K>>;
+        addSortedMultiIndex  : <K2>(name : Text, ord : OrderFunc<K2>, mapper : Mapper<K, V, K2>) -> Cell<SortedMultiIndex<K2, K>>;
 
         //addHashUniqueIndex  : <K2, V2>(ord : OrderFunc<K2>, mapper : F<K, V, K2, V2>) -> Cell<HashUniqueIndex<K2, V2>>;
         //addHashMultiIndex   : <K2, V2>(ord : OrderFunc<K2>, mapper : F<K, V, K2, V2>) -> Cell<HashMultiIndex<K2, V2>>;
@@ -67,21 +82,42 @@ module {
         return object {
             var indicies : List.List<(Text, IdexControllerFunc<K, V>)> = List.nil();
 
-            public func addSortedUniqueIndex<K2, V2>(name : Text, ord : OrderFunc<K2>, mapper : F<K, V, K2, V2>) : Cell<SortedUniqueIndex<K2, V2>> {
-                let idx : Cell<RBTree.Tree<K2, V2>> = {var v = RBTree.empty()};
+            public func addSortedUniqueIndex<K2>(name : Text, ord : OrderFunc<K2>, mapper : Mapper<K, V, K2>) : Cell<SortedUniqueIndex<K2, K>> {
+                let idx : Cell<RBTree.Tree<K2, K>> = {var v = RBTree.empty()};
 
                 let indexController = func(k : K, v : V, action : IndexAction) {
-                    let values = mapper(k, v);
+                    let idxKey = mapper(k, v);
                     switch(action) {
                         case (#add) {
-                            idx.v := RBTree.put<K2, V2>(values.0, ord, values.1, idx.v).1;
+                            idx.v := RBTree.put<K2, K>(idxKey, ord, k, idx.v).1;
                         };
                         case (#remove) {
-                            idx.v := RBTree.remove<K2, V2>(values.0, ord, idx.v).1;
+                            idx.v := RBTree.remove<K2, K>(idxKey, ord, idx.v).1;
                         }
                     }
                 };
-            
+        
+                // Register our indexer
+                indicies := List.push((name, indexController), indicies);
+                return idx;
+            };
+
+            public func addSortedMultiIndex<K2>(name : Text, ord : OrderFunc<K2>, mapper : Mapper<K, V, K2>) : Cell<SortedMultiIndex<K2, K>> {
+                let idx : Cell<RBTree.Tree<K2, List.List<K>>> = {var v = RBTree.empty()};
+
+                let indexController = func(k : K, v : V, action : IndexAction) {
+                    let idxValue = mapper(k, v);
+                    switch(action) {
+                        case (#add) {
+                            idx.v := addToSorted(idxValue, idx.v, ord, k);
+                        };
+                        case (#remove) {
+                            let allButValue : (K) -> Bool = func (toCheck) {return not keyEqual(toCheck, k)};
+                            idx.v := removeFromSorted<K2, K>(idxValue, idx.v, ord, allButValue);
+                        }
+                    }
+                };
+        
                 // Register our indexer
                 indicies := List.push((name, indexController), indicies);
                 return idx;
